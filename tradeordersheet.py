@@ -101,6 +101,9 @@ def append_row(tab, data_dict):
 
 
 def send_email(to, subject, body):
+    if not to or str(to).strip() == "":
+        return # skip if no recipients
+
     message = MIMEText(body)
     message['to'] = to
     message['subject'] = subject
@@ -131,7 +134,10 @@ sku_df = load_data("SKU Master")
 sales_df = load_data("Sales Data")
 config_df = load_data("Config")
 
-admin_email = config_df.loc[0, "Admin Email"] if not config_df.empty else None
+# 🔑 Load ALL admin emails from Config (row-wise)
+admin_emails = []
+if not config_df.empty and "Admin Emails" in config_df.columns:
+    admin_emails = config_df["Admin Emails"].dropna().astype(str).tolist()
 
 # ========== SESSION STATE SAFE INIT ==========
 defaults = {"employee": "", "party": "", "store_name": "", "category": "", "sku": "", "soh": 0}
@@ -292,7 +298,7 @@ if submitted:
         flag = "OK"
         if to_num(qty) > 1.2 * max(reference_sales, 1):
             flag = "Excess Order"
-            if admin_email:
+            if admin_emails:
                 subject = f"⚠️ Trade Excess Order Alert - {employee}"
                 body = f"""
 Employee: {employee}
@@ -304,7 +310,9 @@ Flag: {flag}
 Remarks From Employee:
 {remarks if remarks else "no remarks provided"}
 """
-                send_email(admin_email, subject, body)
+            # join all valid emails with comma
+            recipients = ",".join([e.strip()for e in admin_emails if e and str(e).strip() !=""])
+            send_email(recipients, subject, body)
 
         order_dict = {
             "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

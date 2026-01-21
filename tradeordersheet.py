@@ -109,13 +109,81 @@ def send_email(to, subject, body):
 @st.cache_data(ttl=30)
 def load_data(tab):
     ws = sheet.worksheet(tab)
-    df = pd.DataFrame(ws.get_all_records())
-    if not df.empty:
-        obj_cols = df.select_dtypes(include="object").columns
-        for c in obj_cols:
-            df[c] = df[c].astype(str).str.strip()
+
+    # Read everything (this NEVER fails due to headers)
+    data = ws.get_all_values()
+
+    if not data or len(data) < 2:
+        return pd.DataFrame()
+
+    raw_headers = data[0]
+
+    # Fix blank & duplicate headers safely
+    headers = []
+    seen = {}
+    for i, h in enumerate(raw_headers):
+        h = str(h).strip()
+        if h == "":
+            h = f"col_{i}"
+        if h in seen:
+            seen[h] += 1
+            h = f"{h}_{seen[h]}"
+        else:
+            seen[h] = 0
+        headers.append(h)
+
+    df = pd.DataFrame(data[1:], columns=headers)
+
+    # Clean text columns
+    obj_cols = df.select_dtypes(include="object").columns
+    for c in obj_cols:
+        df[c] = df[c].astype(str).str.strip()
+
     return df
 
+# ======== CUSTOM STYLING ========
+st.markdown("""
+    <style>
+        .main { padding: 1rem !important; }
+        .block-container { padding-top: 1rem !important; padding-bottom: 1rem !important; }
+
+        /* Table layout improvement */
+        div[data-testid="column"] { padding: 0.25rem 0.5rem !important; }
+
+        /* Numeric column alignment */
+        [data-testid="stNumberInput"] { text-align: center !important; }
+
+        /* Headers styling */
+        .stMarkdown strong { font-size: 0.95rem !important; }
+
+        /* Suggested Qty box */
+        .suggested-box {
+            background-color: #e9fbe9;
+            color: #107a10;
+            font-weight: 600;
+            text-align: center;
+            padding: 2px 0;
+            border-radius: 6px;
+        }
+
+        /* Excess Order (red highlight) */
+        .excess {
+            background-color: #ffeaea;
+            color: #c30000;
+            font-weight: 600;
+            text-align: center;
+            padding: 2px 0;
+            border-radius: 6px;
+        }
+
+        /* Buttons look nicer */
+        button[kind="primary"], button[kind="secondary"] {
+            height: 2.5rem !important;
+            font-size: 1rem !important;
+            border-radius: 8px !important;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
 # ========== LOAD MASTERS ==========
 st.title("📦 Trade Order Form")
@@ -221,126 +289,182 @@ else:
 st.write(f"**City:** {store_info.get('City','')}")
 st.write(f"**Visit Frequency:** {store_info.get('Visit Frequency','')} ({store_info.get('Visit Days','')})")
 
-# Category dropdown
-categories = sorted(sku_df["Category"].dropna().astype(str).unique()) if not sku_df.empty else []
-categories = ["-- Select --"] + categories
-category = st.selectbox("Select Category", categories, index=0)
-category = "" if category == "-- Select --" else category
-st.session_state.category = category
+# ======== PRODUCT MATRIX (LIVE UPDATES WITH MULTI-SEARCH PERSISTENCE) ========
+st.subheader("📋 Order Entry")
 
-# ======== PRODUCT MATRIX (LIVE UPDATES) ========
-if category:
-    st.subheader("📋 Order Entry")
+# --- Initialize persistent cart ---
+if "order_cart" not in st.session_state:
+    st.session_state.order_cart = {}
 
-    filtered_skus = sku_df[sku_df["Category"].astype(str) == str(category)] if category else sku_df.iloc[0:0]
+# --- Search with Autocomplete ---
+all_skus = sku_df["SKU"].dropna().astype(str).unique().tolist()
+search_input = st.selectbox("🔍 Search Product (type to filter)", options=[""] + all_skus,key="search_input")
 
-    if not filtered_skus.empty:
-        # Table header
-        header_cols = st.columns([3, 2, 2, 2, 2, 2])
-        header_cols[0].markdown("**SKU**")
-        header_cols[1].markdown("**Last 2M Avg Sales**")
-        header_cols[2].markdown("**Daily Offtake**")
-        header_cols[3].markdown("**SOH**")
-        header_cols[4].markdown("**Suggested Qty**")
-        header_cols[5].markdown("**Order Qty**")
+# Filter SKUs by partial match
+if search_input:
+    filtered_skus = sku_df[sku_df["SKU"].astype(str).str.contains(search_input, case=False, na=False)]
+else:
+    filtered_skus = sku_df.copy()
 
-        order_entries = []
-        today = datetime.today()
-        days_in_current_month = monthrange(today.year, today.month)[1]
+# --- Table for filtered results ---
+if filtered_skus.empty:
+    st.info("No products found. Try a different search term.")
+else:
+    st.markdown("### 🛒 Add Products to Cart")
+    header_cols = st.columns([3, 2, 2, 2, 2, 2])
+    header_cols[0].markdown("**SKU**")
+    header_cols[1].markdown("**Last 2M Avg Sales**")
+    header_cols[2].markdown("**Daily Offtake**")
+    header_cols[3].markdown("**SOH**")
+    header_cols[4].markdown("**Suggested Qty**")
+    header_cols[5].markdown("**Order Qty**")
 
-        for idx, row in filtered_skus.iterrows():
-            sku = row["SKU"]
+    today = datetime.today()
+    days_in_current_month = monthrange(today.year, today.month)[1]
 
-            sales_match = sales_df[
-                (sales_df["Party"].astype(str) == str(party)) &
-                (sales_df["Store Name"].astype(str) == str(store_name)) &
-                (sales_df["City"].astype(str) == str(store_info.get("City",""))) &
-                (sales_df["SKU"].astype(str) == str(sku))
-            ]
+    for idx, row in filtered_skus.iterrows():
+        sku = row["SKU"]
+        category = row.get("Category", "")
 
-            if not sales_match.empty:
-                row_dict = sales_match.iloc[0].to_dict()
-                lm_net = to_num(row_dict.get("Last 2 Month Avg Net Sales", row_dict.get("Last Month Net Sales", 0)))
-            else:
-                lm_net = 0
+        # --- Sales data lookup ---
+        sales_match = sales_df[
+            (sales_df["Party"].astype(str) == str(party)) &
+            (sales_df["Store Name"].astype(str) == str(store_name)) &
+            (sales_df["City"].astype(str) == str(store_info.get("City", ""))) &
+            (sales_df["SKU"].astype(str) == str(sku))
+        ]
+        lm_net = to_num(
+            sales_match.iloc[0].get("Last 2 Month Avg Net Sales", 0)
+        ) if not sales_match.empty else 0
+        daily_offtake = lm_net / days_in_current_month if days_in_current_month > 0 else 0
 
-            daily_offtake = lm_net / days_in_current_month if days_in_current_month > 0 else 0
+        visit_freq = to_num(store_info.get("Visit Frequency", 0))
+        if 1 <= visit_freq <= 6:
+            reorder_days = 7
+        elif visit_freq >= 8:
+            reorder_days = days_in_current_month
+        else:
+            reorder_days = 7
 
-            visit_freq = to_num(store_info.get("Visit Frequency", 0))
-            if 1 <= visit_freq <= 6:
-                reorder_days = 7
-            elif visit_freq >= 8:
-                reorder_days = days_in_current_month
-            else:
-                reorder_days = 7
+        if visit_freq > 0:
+            ref_sales = int(round((daily_offtake * reorder_days) / visit_freq))
+        else:
+            ref_sales = int(round(daily_offtake * reorder_days))
 
-            if visit_freq > 0:
-                ref_sales = int(round((daily_offtake * reorder_days) / visit_freq))
-            else:
-                ref_sales = int(round(daily_offtake * reorder_days))
+        # --- Row Layout ---
+        row_cols = st.columns([3, 2, 2, 2, 2, 2])
+        row_cols[0].write(f"**{sku}**")
+        row_cols[1].write(int(lm_net))
+        row_cols[2].write(f"{daily_offtake:.2f}")
 
-            # --- Row Layout ---
-            row_cols = st.columns([3, 2, 2, 2, 2, 2])
-            row_cols[0].write(sku)
-            row_cols[1].write(lm_net)
-            row_cols[2].write(f"{daily_offtake:.2f}")
+        soh_key = f"soh_{sku}"
+        qty_key = f"qty_{sku}"
+        soh_val = row_cols[3].number_input("", min_value=0, step=1, key=soh_key)
+        suggested = max(ref_sales - soh_val, 0)
+        row_cols[4].markdown(
+            f"<div style='text-align:center; font-weight:600; color:green'>{suggested}</div>",
+            unsafe_allow_html=True
+        )
+        qty_val = row_cols[5].number_input("", min_value=0, step=1, key=qty_key)
 
-            soh_val = row_cols[3].number_input("", min_value=0, step=1, key=f"soh_{sku}")
-            suggested = max(ref_sales - soh_val, 0)   # ✅ updates live
-            row_cols[4].write(suggested)
-
-            qty_val = row_cols[5].number_input("", min_value=0, step=1, key=f"qty_{sku}")
-
-            order_entries.append({
+        # --- Add to cart automatically if any value entered ---
+        if soh_val > 0 or qty_val > 0:
+            st.session_state.order_cart[sku] = {
                 "SKU": sku,
+                "Category": category,
                 "Qty": qty_val,
                 "SOH": soh_val,
                 "Suggested": suggested,
                 "LM Sales": lm_net
-            })
+            }
 
-        remarks = st.text_area("Remarks")
-        submitted = st.button("Submit Order")   # ✅ normal button
+# --- Display current cart ---
+if st.session_state.order_cart:
+    st.markdown("### 🧾 Products in Cart")
+    cart_df = pd.DataFrame(st.session_state.order_cart.values())
+    st.dataframe(cart_df[["SKU", "SOH", "Suggested", "Qty"]], use_container_width=True)
 
-        if submitted:
-            for entry in order_entries:
-                if entry["SOH"] == 0 and entry["Qty"] == 0:
-                    continue
+Remarks = st.text_area("Remarks", key="Remarks")
+col1, col2 = st.columns([1, 1])
+submitted = col1.button("✅ Submit All Orders")
+clear_cart = col2.button("🧹 Clear All")
 
-                flag = "Excess Order" if entry["Qty"] > 1.2 * max(entry["Suggested"], 1) else "OK"
+if clear_cart:
+    # preserve only login/session info so user is not logged out
+    preserved_keys = {"logged_in", "employee", "party", "store_name"}
 
-                order_dict = {
-                    "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "Order Date": today.strftime("%Y-%m-%d"),
-                    "Employee Name": employee,
-                    "Party": party,
-                    "Store Name": store_name,
-                    "City": store_info.get("City",""),
-                    "Category": category,
-                    "SKU": entry["SKU"],
-                    "Qty": entry["Qty"],
-                    "SOH": entry["SOH"],
-                    "Remarks": remarks,
-                    "Last 2 Month Avg Net Sales": entry["LM Sales"],
-                    "Running Month Net Sales": 0,
-                    "Flag": flag
-                }
+    # Keys we definitely want to clear (patterns + explicit keys)
+    def is_order_key(k: str) -> bool:
+        if k in {"order_cart", "search_input", "Remarks", "search_term"}:
+            return True
+        if k.startswith("soh_") or k.startswith("qty_"):
+            return True
+        return False
 
-                append_row("Orders", order_dict)
+    # Delete only order-related keys (leave preserved keys intact)
+    for key in list(st.session_state.keys()):
+        if key in preserved_keys:
+            continue
+        if is_order_key(key):
+            del st.session_state[key]
 
-                if flag == "Excess Order" and admin_emails:
-                    subject = f"⚠️ Trade Excess Order Alert - {employee}"
-                    body = f"""
+    # Recreate the cleared widgets' session entries with empty/defaults,
+    # so the UI will appear blank after rerun.
+    st.session_state["order_cart"] = {}
+    st.session_state["search_input"] = ""
+    st.session_state["Remarks"] = ""
+    # ensure any leftover soh_/qty_ keys are not present (defensive)
+    for key in list(st.session_state.keys()):
+        if key.startswith("soh_") or key.startswith("qty_"):
+            st.session_state.pop(key, None)
+        if key.startswith("qty_"):
+            st.session_state.pop(key, None)
+
+    st.success("🧹 Cleared all products, Remarks, quantities, and search fields.")
+    st.rerun()
+
+if submitted:
+    if not st.session_state.order_cart:
+        st.warning("⚠️ No items in cart.")
+    else:
+        today = datetime.today()
+        for entry in st.session_state.order_cart.values():
+            flag = "Excess Order" if entry["Qty"] > 1.2 * max(entry["Suggested"], 1) else "OK"
+            order_dict = {
+                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Order Date": today.strftime("%Y-%m-%d"),
+                "Employee Name": employee,
+                "Party": party,
+                "Store Name": store_name,
+                "City": store_info.get("City", ""),
+                "Category": entry["Category"],
+                "SKU": entry["SKU"],
+                "Qty": entry["Qty"],
+                "SOH": entry["SOH"],
+                "Remarks": Remarks,
+                "Last 2 Month Avg Net Sales": entry["LM Sales"],
+                "Running Month Net Sales": 0,
+                "Flag": flag
+            }
+            append_row("Orders", order_dict)
+
+            # --- Send alert for excess ---
+            if flag == "Excess Order" and admin_emails:
+                subject = f"⚠️ Trade Excess Order Alert - {employee}"
+                body = f"""
 Employee: {employee}
-Store: {store_name} ({party}, {store_info.get('City','')})
+Store: {store_name} ({party}, {store_info.get("City","")})
 SKU: {entry["SKU"]}
 Ordered QTY: {entry["Qty"]}
 Reference Sales (Offtake): {entry["Suggested"]}
 Flag: {flag}
 Remarks From Employee:
-{remarks if remarks else "no remarks provided"}
+{Remarks if Remarks else "no Remarks provided"}
 """
-                    recipients = ",".join([e.strip() for e in admin_emails if e and str(e).strip() != ""])
-                    send_email(recipients, subject, body)
+                recipients = ",".join(
+                    [e.strip() for e in admin_emails if e and str(e).strip() != ""]
+                )
+                send_email(recipients, subject, body)
 
-            st.success("✅ Orders submitted successfully!")
+        st.success("✅ All orders submitted successfully!")
+        st.session_state.order_cart.clear()

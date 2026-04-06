@@ -3,37 +3,44 @@ import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime
-from googleapiclient.discovery import build
-from email.mime.text import MIMEText
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-import base64
-import pickle
 from calendar import monthrange
+import uuid
+import random
+import string
+import pickle
+from google.auth.transport.requests import Request
+from email.mime.text import MIMEText
+import base64
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from streamlit_js_eval import get_geolocation
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
-# ========== CONFIGURATION ==========
+# ========== CONFIG ==========
 GOOGLE_SHEET_ID = st.secrets["google_sheet_id"]
+DRIVE_FOLDER_ID = st.secrets["drive_folder_id"]
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/gmail.send"
+    "https://www.googleapis.com/auth/drive"
 ]
-
-# --- Google Sheets Auth (Service Account) ---
+# --- Google Sheets Auth (Service Account)
 creds = Credentials.from_service_account_info(
     st.secrets["gcp_service_account"], scopes=SCOPES
 )
 client = gspread.authorize(creds)
 sheet = client.open_by_key(GOOGLE_SHEET_ID)
 
-
 # --- Gmail Auth ---
 def get_gmail_service():
     creds = None
+    # Load token from Streamlit secrets
     if "token" in st.secrets and "pickle_b64" in st.secrets["token"]:
         token_bytes = base64.b64decode(st.secrets["token"]["pickle_b64"])
         creds = pickle.loads(token_bytes)
 
+    # If no valid creds, refresh or login
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
@@ -46,11 +53,13 @@ def get_gmail_service():
                     "token_uri": st.secrets["gmail_oauth"]["token_uri"],
                 }
             }
+
             flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
             creds = flow.run_local_server(port=0)
 
-        with open("token.pickle", "wb") as token:
-            pickle.dump(creds, token)
+            # Save token locally (optional)
+            with open("token.pickle", "wb") as token:
+                pickle.dump(creds, token)
 
     return build("gmail", "v1", credentials=creds)
 
@@ -62,409 +71,398 @@ def get_gmail_service_cached():
 
 gmail_service = get_gmail_service_cached()
 
-
 # ========== HELPERS ==========
-def to_num(x, default=0):
-    try:
-        if pd.isna(x):
-            return default
-        if isinstance(x, (int, float)):
-            return int(x)
-        s = str(x).strip().replace(",", "")
-        if s == "" or s.lower() == "nan":
-            return default
-        return int(float(s))
-    except:
-        return default
+st.cache_data(ttl=300)
+def load_data(tab):
+    ws = sheet.worksheet(tab)
+    data = ws.get_all_values()
+    if not data or len(data) < 2:
+        return pd.DataFrame()
+    return pd.DataFrame(data[1:], columns=data[0])
 
 
 def append_row(tab, data_dict):
     ws = sheet.worksheet(tab)
     headers = ws.row_values(1)
-    full_headers = [
-        "Timestamp", "Order Date", "Employee Name", "Party", "Store Name", "City",
-        "Category", "SKU", "Qty", "SOH", "Remarks",
-        "Last 2 Month Avg Net Sales", "Running Month Net Sales", "Flag"
-    ]
-    if not headers:
-        ws.insert_row(full_headers, 1)
-        headers = full_headers
     row = [data_dict.get(col, "") for col in headers]
     ws.append_row(row)
 
 
-def send_email(to, subject, body):
+def to_num(x):
     try:
-        if not to or str(to).strip() == "":
-            return
-        message = MIMEText(body)
-        message['to'] = to
-        message['subject'] = subject
-        create_message = {'raw': base64.urlsafe_b64encode(message.as_bytes()).decode()}
-        gmail_service.users().messages().send(userId="me", body=create_message).execute()
-    except Exception as e:
-        st.warning(f"⚠️ Email send failed (order saved anyway): {e}")
+        return int(float(x))
+    except:
+        return 0
+    
+def send_email(service, to, subject, body):
+    message = MIMEText(body)
+    message['to'] = to
+    message['subject'] = subject
 
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    service.users().messages().send(
+        userId="me",
+        body={'raw': raw}
+    ).execute() 
 
-@st.cache_data(ttl=30)
-def load_data(tab):
-    ws = sheet.worksheet(tab)
-
-    # Read everything (this NEVER fails due to headers)
-    data = ws.get_all_values()
-
-    if not data or len(data) < 2:
-        return pd.DataFrame()
-
-    raw_headers = data[0]
-
-    # Fix blank & duplicate headers safely
-    headers = []
-    seen = {}
-    for i, h in enumerate(raw_headers):
-        h = str(h).strip()
-        if h == "":
-            h = f"col_{i}"
-        if h in seen:
-            seen[h] += 1
-            h = f"{h}_{seen[h]}"
-        else:
-            seen[h] = 0
-        headers.append(h)
-
-    df = pd.DataFrame(data[1:], columns=headers)
-
-    # Clean text columns
-    obj_cols = df.select_dtypes(include="object").columns
-    for c in obj_cols:
-        df[c] = df[c].astype(str).str.strip()
-
-    return df
-
-# ======== CUSTOM STYLING ========
-st.markdown("""
-    <style>
-        .main { padding: 1rem !important; }
-        .block-container { padding-top: 1rem !important; padding-bottom: 1rem !important; }
-
-        /* Table layout improvement */
-        div[data-testid="column"] { padding: 0.25rem 0.5rem !important; }
-
-        /* Numeric column alignment */
-        [data-testid="stNumberInput"] { text-align: center !important; }
-
-        /* Headers styling */
-        .stMarkdown strong { font-size: 0.95rem !important; }
-
-        /* Suggested Qty box */
-        .suggested-box {
-            background-color: #e9fbe9;
-            color: #107a10;
-            font-weight: 600;
-            text-align: center;
-            padding: 2px 0;
-            border-radius: 6px;
-        }
-
-        /* Excess Order (red highlight) */
-        .excess {
-            background-color: #ffeaea;
-            color: #c30000;
-            font-weight: 600;
-            text-align: center;
-            padding: 2px 0;
-            border-radius: 6px;
-        }
-
-        /* Buttons look nicer */
-        button[kind="primary"], button[kind="secondary"] {
-            height: 2.5rem !important;
-            font-size: 1rem !important;
-            border-radius: 8px !important;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
-# ========== LOAD MASTERS ==========
-st.title("📦 Trade Order Form")
-
-if st.button("🔄 Re-load Google Sheets"):
-    st.cache_data.clear()
-    st.rerun()
-
-store_df = load_data("Store Master")
-sku_df = load_data("SKU Master")
-sales_df = load_data("Sales Data")
+# ========== LOGIN ==========
 config_df = load_data("Config")
+city_email_map = {}
 
-admin_emails = []
-if not config_df.empty and "Admin Emails" in config_df.columns:
-    admin_emails = config_df["Admin Emails"].dropna().astype(str).tolist()
+if "City" in config_df.columns and "Emails" in config_df.columns:
+    for _, row in config_df.iterrows():
+        city_name = str(row["City"]).strip().lower()
+        emails = str(row["Emails"]).split(",")
 
-defaults = {"employee": "", "party": "", "store_name": "", "category": ""}
-for k, v in defaults.items():
-    st.session_state.setdefault(k, v)
+        # साफ emails
+        emails = [e.strip() for e in emails if e.strip()]
 
-# ========== LOGIN SYSTEM ==========
-st.sidebar.title("🔑 Employee Login")
-
-login_user = st.sidebar.text_input("Username")
-login_pass = st.sidebar.text_input("Password", type="password")
-login_btn = st.sidebar.button("Login")
+        if city_name:
+            city_email_map[city_name] = emails
+st.sidebar.title("Login")
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
-    st.session_state.employee = ""
-
-if login_btn:
-    user_row = config_df[
-        (config_df["Username"].astype(str) == str(login_user)) &
-        (config_df["Password"].astype(str) == str(login_pass))
-    ]
-    if not user_row.empty:
-        st.session_state.logged_in = True
-        st.session_state.employee = user_row.iloc[0]["Employee Name"]
-        st.success(f"✅ Logged in as {st.session_state.employee}")
-    else:
-        st.error("❌ Invalid Username or Password")
 
 if not st.session_state.logged_in:
-    st.warning("Please log in to continue.")
+    user = st.sidebar.text_input("Username")
+    password = st.sidebar.text_input("Password", type="password")
+
+    if st.sidebar.button("Login"):
+        row = config_df[(config_df["Username"] == user) & (config_df["Password"] == password)]
+        if not row.empty:
+            st.session_state.logged_in = True
+            st.session_state.employee = row.iloc[0]["Employee Name"]
+            st.session_state.role = row.iloc[0]["Role"]
+            st.rerun()
+        else:
+            st.error("Invalid login")
+
     st.stop()
 
-# ========== CASCADING DROPDOWNS ==========
-employee = st.session_state.employee
-st.write(f"👤 Logged in Employee: **{employee}**")
-
-party_list = []
-if employee:
-    party_list = sorted(store_df.loc[store_df["Employee Name"] == employee, "Party"].dropna().astype(str).unique())
-party_list = ["-- Select --"] + party_list
-party = st.selectbox("Select Party", party_list, index=0)
-party = "" if party == "-- Select --" else party
-st.session_state.party = party
-
-# --- Store filter by weekday ---
-today_weekday = datetime.today().strftime("%A")  # e.g. "Monday"
-weekday_map = {"Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday",
-               "Thu": "Thursday", "Thur": "Thursday", "Fri": "Friday",
-               "Sat": "Saturday", "Sun": "Sunday"}
-
-store_list = []
-if employee and party:
-    filtered_stores = store_df[
-        (store_df["Employee Name"] == employee) &
-        (store_df["Party"] == party)
-    ]
-    valid_stores = []
-    for _, row in filtered_stores.iterrows():
-        visit_days_raw = str(row.get("Visit Days", ""))  # e.g. "Mon, Wed, Fri"
-        visit_days = []
-        for d in visit_days_raw.split(","):
-            d = d.strip().title()
-            if d in weekday_map:
-                visit_days.append(weekday_map[d])
-            elif d in weekday_map.values():
-                visit_days.append(d)
-        if today_weekday in visit_days:
-            valid_stores.append(row["Store Name"])
-    store_list = sorted(set(valid_stores))
-
-store_list = ["-- Select --"] + store_list
-store_name = st.selectbox(f"Select Store (Today: {today_weekday})", store_list, index=0)
-store_name = "" if store_name == "-- Select --" else store_name
-st.session_state.store_name = store_name
-
-# Store info
-if employee and party and store_name:
-    row = store_df[
-        (store_df["Employee Name"] == employee) &
-        (store_df["Party"] == party) &
-        (store_df["Store Name"] == store_name)
-    ]
-    store_info = row.iloc[0].to_dict() if not row.empty else {"City": "", "Visit Frequency": "", "Visit Days": ""}
-else:
-    store_info = {"City": "", "Visit Frequency": "", "Visit Days": ""}
-
-st.write(f"**City:** {store_info.get('City','')}")
-st.write(f"**Visit Frequency:** {store_info.get('Visit Frequency','')} ({store_info.get('Visit Days','')})")
-
-# ======== PRODUCT MATRIX (LIVE UPDATES WITH MULTI-SEARCH PERSISTENCE) ========
-st.subheader("📋 Order Entry")
-
-# --- Initialize persistent cart ---
-if "order_cart" not in st.session_state:
-    st.session_state.order_cart = {}
-
-# --- Search with Autocomplete ---
-all_skus = sku_df["SKU"].dropna().astype(str).unique().tolist()
-search_input = st.selectbox("🔍 Search Product (type to filter)", options=[""] + all_skus,key="search_input")
-
-# Filter SKUs by partial match
-if search_input:
-    filtered_skus = sku_df[sku_df["SKU"].astype(str).str.contains(search_input, case=False, na=False)]
-else:
-    filtered_skus = sku_df.copy()
-
-# --- Table for filtered results ---
-if filtered_skus.empty:
-    st.info("No products found. Try a different search term.")
-else:
-    st.markdown("### 🛒 Add Products to Cart")
-    header_cols = st.columns([3, 2, 2, 2, 2, 2])
-    header_cols[0].markdown("**SKU**")
-    header_cols[1].markdown("**Last 2M Avg Sales**")
-    header_cols[2].markdown("**Daily Offtake**")
-    header_cols[3].markdown("**SOH**")
-    header_cols[4].markdown("**Suggested Qty**")
-    header_cols[5].markdown("**Order Qty**")
-
-    today = datetime.today()
-    days_in_current_month = monthrange(today.year, today.month)[1]
-
-    for idx, row in filtered_skus.iterrows():
-        sku = row["SKU"]
-        category = row.get("Category", "")
-
-        # --- Sales data lookup ---
-        sales_match = sales_df[
-            (sales_df["Party"].astype(str) == str(party)) &
-            (sales_df["Store Name"].astype(str) == str(store_name)) &
-            (sales_df["City"].astype(str) == str(store_info.get("City", ""))) &
-            (sales_df["SKU"].astype(str) == str(sku))
-        ]
-        lm_net = to_num(
-            sales_match.iloc[0].get("Last 2 Month Avg Net Sales", 0)
-        ) if not sales_match.empty else 0
-        daily_offtake = lm_net / days_in_current_month if days_in_current_month > 0 else 0
-
-        visit_freq = to_num(store_info.get("Visit Frequency", 0))
-        if 1 <= visit_freq <= 6:
-            reorder_days = 7
-        elif visit_freq >= 8:
-            reorder_days = days_in_current_month
-        else:
-            reorder_days = 7
-
-        if visit_freq > 0:
-            ref_sales = int(round((daily_offtake * reorder_days) / visit_freq))
-        else:
-            ref_sales = int(round(daily_offtake * reorder_days))
-
-        # --- Row Layout ---
-        row_cols = st.columns([3, 2, 2, 2, 2, 2])
-        row_cols[0].write(f"**{sku}**")
-        row_cols[1].write(int(lm_net))
-        row_cols[2].write(f"{daily_offtake:.2f}")
-
-        soh_key = f"soh_{sku}"
-        qty_key = f"qty_{sku}"
-        soh_val = row_cols[3].number_input("", min_value=0, step=1, key=soh_key)
-        suggested = max(ref_sales - soh_val, 0)
-        row_cols[4].markdown(
-            f"<div style='text-align:center; font-weight:600; color:green'>{suggested}</div>",
-            unsafe_allow_html=True
-        )
-        qty_val = row_cols[5].number_input("", min_value=0, step=1, key=qty_key)
-
-        # --- Add to cart automatically if any value entered ---
-        if soh_val > 0 or qty_val > 0:
-            st.session_state.order_cart[sku] = {
-                "SKU": sku,
-                "Category": category,
-                "Qty": qty_val,
-                "SOH": soh_val,
-                "Suggested": suggested,
-                "LM Sales": lm_net
-            }
-
-# --- Display current cart ---
-if st.session_state.order_cart:
-    st.markdown("### 🧾 Products in Cart")
-    cart_df = pd.DataFrame(st.session_state.order_cart.values())
-    st.dataframe(cart_df[["SKU", "SOH", "Suggested", "Qty"]], use_container_width=True)
-
-Remarks = st.text_area("Remarks", key="Remarks")
-col1, col2 = st.columns([1, 1])
-submitted = col1.button("✅ Submit All Orders")
-clear_cart = col2.button("🧹 Clear All")
-
-if clear_cart:
-    # preserve only login/session info so user is not logged out
-    preserved_keys = {"logged_in", "employee", "party", "store_name"}
-
-    # Keys we definitely want to clear (patterns + explicit keys)
-    def is_order_key(k: str) -> bool:
-        if k in {"order_cart", "search_input", "Remarks", "search_term"}:
-            return True
-        if k.startswith("soh_") or k.startswith("qty_"):
-            return True
-        return False
-
-    # Delete only order-related keys (leave preserved keys intact)
-    for key in list(st.session_state.keys()):
-        if key in preserved_keys:
-            continue
-        if is_order_key(key):
-            del st.session_state[key]
-
-    # Recreate the cleared widgets' session entries with empty/defaults,
-    # so the UI will appear blank after rerun.
-    st.session_state["order_cart"] = {}
-    st.session_state["search_input"] = ""
-    st.session_state["Remarks"] = ""
-    # ensure any leftover soh_/qty_ keys are not present (defensive)
-    for key in list(st.session_state.keys()):
-        if key.startswith("soh_") or key.startswith("qty_"):
-            st.session_state.pop(key, None)
-        if key.startswith("qty_"):
-            st.session_state.pop(key, None)
-
-    st.success("🧹 Cleared all products, Remarks, quantities, and search fields.")
+if st.sidebar.button("Logout"):
+    st.session_state.clear()
     st.rerun()
 
-if submitted:
-    if not st.session_state.order_cart:
-        st.warning("⚠️ No items in cart.")
+employee = st.session_state.employee
+role = st.session_state.role
+
+# ========== ATTENDANCE ==========
+if "attendance_done" not in st.session_state:
+    st.session_state.attendance_done = False
+
+if not st.session_state.attendance_done:
+    st.subheader("📸 Attendance")
+    photo = st.camera_input("Capture Photo")
+    loc = get_geolocation()
+
+    if st.button("Mark Attendance"):
+        if photo and loc:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            file_name = f"{employee}_{ts}.jpg"
+
+            with open(file_name, "wb") as f:
+                f.write(photo.getbuffer())
+
+            drive_service = build("drive", "v3", credentials=creds)
+            media = MediaFileUpload(file_name, mimetype='image/jpeg')
+
+            file = drive_service.files().create(
+                body={'name': file_name, 'parents': [DRIVE_FOLDER_ID]},
+                media_body=media,
+                fields='id',
+                supportsAllDrives=True
+            ).execute()
+
+            lat = loc['coords']['latitude']
+            lon = loc['coords']['longitude']
+            map_url = f"https://www.google.com/maps?q={lat},{lon}"
+
+            append_row("Attendance", {
+                "Employee": employee,
+                "Time": ts,
+                "Lat": lat,
+                "Lon": lon,
+                "Location Link": map_url,
+                "Photo": file_name
+            })
+
+            st.session_state.attendance_done = True
+            st.success("Attendance marked")
+        else:
+            st.error("Photo & location required")
+
+    st.stop()
+
+# ========== LOAD DATA ==========
+store_df = load_data("Store Master")
+sku_df = load_data("SKU Master")
+sales_df = load_data("Sales Data")
+orders_df = load_data("Orders")
+target_df = load_data("Targets")
+
+# ========== VISIT DAY FIX ==========
+today_day_full = datetime.today().strftime("%A")
+
+weekday_map = {
+    "mon": "Monday", "monday": "Monday",
+    "tue": "Tuesday", "tuesday": "Tuesday",
+    "wed": "Wednesday", "wednesday": "Wednesday",
+    "thu": "Thursday", "thur": "Thursday", "thursday": "Thursday",
+    "fri": "Friday", "friday": "Friday",
+    "sat": "Saturday", "saturday": "Saturday",
+    "sun": "Sunday", "sunday": "Sunday"
+}
+
+filtered_store_df = store_df[
+    store_df["Employee Name"].astype(str).str.contains(employee, case=False, na=False)
+]
+
+today_full = datetime.today().strftime("%A").lower()   # monday
+today_short = datetime.today().strftime("%a").lower()  # mon
+
+valid_rows = []
+
+for _, row in filtered_store_df.iterrows():
+    raw_days = str(row.get("Visit Days", "")).lower()
+
+    # split safely
+    days_list = [d.strip() for d in raw_days.split(",") if d.strip()]
+
+    match_found = False
+
+    for d in days_list:
+        if d.startswith(today_short) or d.startswith(today_full):
+            match_found = True
+            break
+
+    if match_found:
+        valid_rows.append(row)
+
+filtered_store_df = pd.DataFrame(valid_rows) if valid_rows else pd.DataFrame(columns=store_df.columns)
+
+# ========== CASCADING ==========
+party_list = sorted(filtered_store_df["Party"].dropna().unique())
+party_list = ["-- Select --"] + party_list
+party = st.selectbox("Party", party_list)
+party = "" if party == "-- Select --" else party
+
+store_list = []
+if party:
+    store_list = sorted(filtered_store_df[filtered_store_df["Party"] == party]["Store Name"].dropna().unique())
+
+store_list = ["-- Select --"] + store_list
+store_name = st.selectbox(f"Store (Today: {today_day_full})", store_list)
+store_name = "" if store_name == "-- Select --" else store_name
+
+store_row = filtered_store_df[filtered_store_df["Store Name"] == store_name]
+store_info = store_row.iloc[0].to_dict() if not store_row.empty else {}
+# ===== SHOW BEAT + VISIT FREQ =====
+if store_name:
+    st.write(f"📅 Visit Days: {store_info.get('Visit Days','')}")
+    st.write(f"🔁 Visit Frequency: {store_info.get('Visit Frequency','')}")
+
+# ========== CATEGORY FILTER ==========
+categories = ["All"] + sorted(sku_df["Category"].dropna().unique().tolist())
+selected_cat = st.selectbox("Filter Category", categories)
+
+if selected_cat != "All":
+    sku_df = sku_df[sku_df["Category"] == selected_cat]
+
+# ========== PRODUCT SEARCH ==========
+search_term = st.text_input("🔍 Search SKU")
+
+if search_term:
+    sku_df = sku_df[sku_df["SKU"].astype(str).str.contains(search_term, case=False, na=False)]
+
+# ========== ORDER ENTRY ==========
+st.subheader("📦 Order Entry")
+
+cart = {}
+today = datetime.today().strftime("%Y-%m-%d")
+days_in_month = monthrange(datetime.today().year, datetime.today().month)[1]
+visit_freq = to_num(store_info.get("Visit Frequency", 0))
+city = str(store_info.get("City", "")).strip().lower()
+
+h1,h2,h3,h4 = st.columns([3,2,2,2])
+h1.markdown("**SKU**")
+h2.markdown("**SOH**")
+h3.markdown("**Suggested Qty**")
+h4.markdown("**Order Qty**")
+
+sku_df = sku_df.head(100)
+
+for _, row in sku_df.iterrows():
+    sku = row["SKU"]
+    category = row.get("Category", "")
+
+    sales_match = sales_df[
+        (sales_df["Store Name"].astype(str) == str(store_name)) &
+        (sales_df["SKU"].astype(str) == str(sku))
+    ]
+
+    lm_net = to_num(sales_match.iloc[0].get("Last 2 Month Avg Net Sales", 0)) if not sales_match.empty else 0
+    daily = lm_net / days_in_month if days_in_month else 0
+
+    if 1 <= visit_freq <= 6:
+        reorder_days = 7
+    elif visit_freq >= 8:
+        reorder_days = days_in_month
     else:
-        today = datetime.today()
-        for entry in st.session_state.order_cart.values():
-            flag = "Excess Order" if entry["Qty"] > 1.2 * max(entry["Suggested"], 1) else "OK"
-            order_dict = {
-                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "Order Date": today.strftime("%Y-%m-%d"),
-                "Employee Name": employee,
-                "Party": party,
-                "Store Name": store_name,
-                "City": store_info.get("City", ""),
-                "Category": entry["Category"],
-                "SKU": entry["SKU"],
-                "Qty": entry["Qty"],
-                "SOH": entry["SOH"],
-                "Remarks": Remarks,
-                "Last 2 Month Avg Net Sales": entry["LM Sales"],
-                "Running Month Net Sales": 0,
-                "Flag": flag
-            }
-            append_row("Orders", order_dict)
+        reorder_days = 7
 
-            # --- Send alert for excess ---
-            if flag == "Excess Order" and admin_emails:
-                subject = f"⚠️ Trade Excess Order Alert - {employee}"
-                body = f"""
+    ref_sales = int(round((daily * reorder_days) / visit_freq)) if visit_freq else int(round(daily * reorder_days))
+
+    c1,c2,c3,c4 = st.columns([3,2,2,2])
+    c1.write(sku)
+
+    soh = c2.number_input("", min_value=0, key=f"soh_{sku}")
+    suggested = max(ref_sales - soh, 0)
+    c3.markdown(f"<div style='text-align:center; color:green'>{suggested}</div>", unsafe_allow_html=True)
+
+    qty = c4.number_input("", min_value=0, key=f"qty_{sku}")
+
+    if qty > 0:
+        cart[sku] = {
+            "SKU": sku,
+            "Category": category,
+            "Qty": qty,
+            "SOH": soh,
+            "Suggested": suggested,
+            "LM": lm_net,
+            "MRP": float(row.get("MRP", 0) or 0)
+        }
+
+Remarks = st.text_area("Remarks")
+
+# ========== FIXED SUBMIT ==========
+if st.button("Submit Order"):
+
+    if not party or not store_name:
+        st.error("Select store/party")
+        st.stop()
+
+    if not cart:
+        st.warning("No items selected")
+        st.stop()
+
+    # ===== ORDER ID LOGIC =====
+    existing_orders = orders_df.copy()
+
+    if not existing_orders.empty and "Order ID" in existing_orders.columns:
+        numeric_ids = existing_orders["Order ID"].astype(str).str.extract(r'ORD-(\d+)')[0]
+        last_id = pd.to_numeric(numeric_ids, errors='coerce').max()
+        next_order_id = int(last_id) + 1 if pd.notna(last_id) else 1
+    else:
+        next_order_id = 1
+
+    # ✅ ALWAYS AFTER next_order_id
+    suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=2))
+    order_id = f"ORD-{str(next_order_id).zfill(3)}-{suffix}"
+
+    # ===== LOCATION =====
+    loc = get_geolocation()
+    lat = loc['coords']['latitude'] if loc and 'coords' in loc else ""
+    lon = loc['coords']['longitude'] if loc and 'coords' in loc else ""
+    map_url = f"https://www.google.com/maps?q={lat},{lon}" if lat and lon else ""
+
+    # ===== LOOP =====
+    for entry in cart.values():
+
+        flag = "Excess Order" if entry["Qty"] > 1.2 * max(entry["Suggested"], 1) else "OK"
+
+        append_row("Orders", {
+            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "Order Date": today,
+            "Employee Name": employee,
+            "Party": party,
+            "Store Name": store_name,
+            "City": city,
+            "Category": entry["Category"],
+            "SKU": entry["SKU"],
+            "Qty": entry["Qty"],
+            "SOH": entry["SOH"],
+            "Remarks": Remarks,
+            "Last 2 Month Avg Net Sales": entry["LM"],
+            "Running Month Net Sales": 0,
+            "Flag": flag,
+            "Order ID": order_id,
+            "Latitude": lat,
+            "Longitude": lon,
+            "Location Link": map_url
+        })
+
+        # ===== EMAIL =====
+        if flag == "Excess Order":
+
+            to_emails = city_email_map.get(city, ["dhruvsinh@gmail.com"])
+
+            send_email(
+                gmail_service,
+                to=", ".join(to_emails),
+                subject="Excess Order Alert",
+                body=f"""
+Order ID: {order_id}
 Employee: {employee}
-Store: {store_name} ({party}, {store_info.get("City","")})
-SKU: {entry["SKU"]}
-Ordered QTY: {entry["Qty"]}
-Reference Sales (Offtake): {entry["Suggested"]}
-Flag: {flag}
-Remarks From Employee:
-{Remarks if Remarks else "no Remarks provided"}
+City: {city}
+Store: {store_name}
+SKU: {entry['SKU']}
+Qty: {entry['Qty']}
+Suggested: {entry['Suggested']}
+Remarks: {Remarks}
 """
-                recipients = ",".join(
-                    [e.strip() for e in admin_emails if e and str(e).strip() != ""]
-                )
-                send_email(recipients, subject, body)
+            )
 
-        st.success("✅ All orders submitted successfully!")
-        st.session_state.order_cart.clear()
+    st.success("Order Submitted")
+    st.rerun()
+
+# ========== TODAY + MTD ==========
+today = datetime.today().strftime("%Y-%m-%d")
+current_month = datetime.today().strftime("%Y-%m")
+
+today_orders = orders_df[
+    (orders_df["Employee Name"] == employee) &
+    (orders_df["Order Date"] == today)
+]
+
+mtd_orders = orders_df[
+    (orders_df["Employee Name"] == employee) &
+    (orders_df["Order Date"].astype(str).str.startswith(current_month))
+]
+
+# ===== TODAY TABLE =====
+st.subheader("📊 Today Orders")
+
+cols = ["Order Date","Employee Name","Party","Store Name","City","SKU","Qty","SOH","Last 2 Month Avg Net Sales"]
+cols = [c for c in cols if c in today_orders.columns]
+
+st.dataframe(today_orders[cols])
+
+# ===== MTD METRICS =====
+st.subheader("📈 MTD Performance")
+
+ach_qty = mtd_orders["Qty"].astype(float).sum() if not mtd_orders.empty else 0
+
+sku_mrp = dict(zip(sku_df["SKU"], pd.to_numeric(sku_df.get("MRP",0), errors='coerce').fillna(0)))
+
+if not mtd_orders.empty:
+    mtd_orders["Value"] = mtd_orders["Qty"].astype(float) * mtd_orders["SKU"].map(sku_mrp)
+
+ach_val = mtd_orders["Value"].sum() if not mtd_orders.empty else 0
+
+tgt_qty = target_df[target_df["Employee"]==employee]["Target Qty"].astype(float).sum() if "Target Qty" in target_df.columns else 0
+tgt_val = target_df[target_df["Employee"]==employee]["Target Value"].astype(float).sum() if "Target Value" in target_df.columns else 0
+
+col1,col2,col3,col4 = st.columns(4)
+col1.metric("MTD Qty", int(ach_qty))
+col2.metric("Target Qty", int(tgt_qty))
+col3.metric("MTD ₹", int(ach_val))
+col4.metric("Target ₹", int(tgt_val))
+
+# ========== ADMIN ==========
+if role == "Admin":
+    d = st.date_input("Select Date")
+    rep = orders_df[orders_df["Order Date"] == d.strftime("%Y-%m-%d")]
+    st.download_button("Download", rep.to_csv(index=False).encode(), file_name="report.csv")
+
+st.success("System Ready ✅")

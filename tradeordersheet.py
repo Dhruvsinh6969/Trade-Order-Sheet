@@ -425,7 +425,7 @@ Remarks: {Remarks}
 ws.append_rows(rows_to_add)
 
 st.success("Order Submitted")
-    st.rerun()
+st.rerun()
 
 # ========== TODAY + MTD ==========
 today = datetime.today().strftime("%Y-%m-%d")

@@ -316,11 +316,11 @@ for _, row in sku_df.iterrows():
     c1,c2,c3,c4 = st.columns([3,2,2,2])
     c1.write(sku)
 
-    soh = c2.number_input("", min_value=0, key=f"soh_{sku}")
+    soh = c2.number_input("SOH", min_value=0, key=f"soh_{sku}", label_visibility="collapsed")
     suggested = max(ref_sales - soh, 0)
     c3.markdown(f"<div style='text-align:center; color:green'>{suggested}</div>", unsafe_allow_html=True)
 
-    qty = c4.number_input("", min_value=0, key=f"qty_{sku}")
+    qty = c4.number_input("Qty", min_value=0, key=f"qty_{sku}", label_visibility="collapsed")
 
     if qty > 0:
         cart[sku] = {
@@ -336,7 +336,7 @@ for _, row in sku_df.iterrows():
 Remarks = st.text_area("Remarks")
 
 # ========== FIXED SUBMIT ==========
-if st.button("Submit Order"):
+if st.button("Submit Order", use_container_width=True):
 
     if not party or not store_name:
         st.error("Select store/party")
@@ -422,12 +422,10 @@ Remarks: {Remarks}
             )
 
 # ✅ SINGLE API CALL (IMPORTANT)
-st.write("ROWS TO ADD:", rows_to_add)
-st.write("TOTAL ROWS:", len(rows_to_add))
 ws.append_rows(rows_to_add)
 
 st.success("Order Submitted")
-st.rerun()
+st.stop()
 
 # ========== TODAY + MTD ==========
 today = datetime.today().strftime("%Y-%m-%d")

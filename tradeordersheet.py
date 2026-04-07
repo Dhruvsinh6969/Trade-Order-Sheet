@@ -401,7 +401,7 @@ for entry in cart.values():
     rows_to_add.append(row)
     
         # ===== EMAIL =====
-        if flag == "Excess Order":
+    if flag == "Excess Order":
 
             to_emails = city_email_map.get(city, ["dhruvsinh@gmail.com"])
 

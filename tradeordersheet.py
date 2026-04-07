@@ -424,7 +424,7 @@ Remarks: {Remarks}
 # ✅ SINGLE API CALL (IMPORTANT)
 ws.append_rows(rows_to_add)
 
-    st.success("Order Submitted")
+st.success("Order Submitted")
     st.rerun()
 
 # ========== TODAY + MTD ==========

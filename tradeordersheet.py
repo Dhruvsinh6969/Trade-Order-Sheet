@@ -422,6 +422,8 @@ Remarks: {Remarks}
             )
 
 # ✅ SINGLE API CALL (IMPORTANT)
+st.write("ROWS TO ADD:", rows_to_add)
+st.write("TOTAL ROWS:", len(rows_to_add))
 ws.append_rows(rows_to_add)
 
 st.success("Order Submitted")

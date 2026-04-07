@@ -367,31 +367,39 @@ if st.button("Submit Order"):
     map_url = f"https://www.google.com/maps?q={lat},{lon}" if lat and lon else ""
 
     # ===== LOOP =====
-    for entry in cart.values():
+ws = sheet.worksheet("Orders")
+headers = ws.row_values(1)
 
-        flag = "Excess Order" if entry["Qty"] > 1.2 * max(entry["Suggested"], 1) else "OK"
+rows_to_add = []
 
-        append_row("Orders", {
-            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "Order Date": today,
-            "Employee Name": employee,
-            "Party": party,
-            "Store Name": store_name,
-            "City": city,
-            "Category": entry["Category"],
-            "SKU": entry["SKU"],
-            "Qty": entry["Qty"],
-            "SOH": entry["SOH"],
-            "Remarks": Remarks,
-            "Last 2 Month Avg Net Sales": entry["LM"],
-            "Running Month Net Sales": 0,
-            "Flag": flag,
-            "Order ID": order_id,
-            "Latitude": lat,
-            "Longitude": lon,
-            "Location Link": map_url
-        })
+for entry in cart.values():
 
+    flag = "Excess Order" if entry["Qty"] > 1.2 * max(entry["Suggested"], 1) else "OK"
+
+    data_dict = {
+        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "Order Date": today,
+        "Employee Name": employee,
+        "Party": party,
+        "Store Name": store_name,
+        "City": city,
+        "Category": entry["Category"],
+        "SKU": entry["SKU"],
+        "Qty": entry["Qty"],
+        "SOH": entry["SOH"],
+        "Remarks": Remarks,
+        "Last 2 Month Avg Net Sales": entry["LM"],
+        "Running Month Net Sales": 0,
+        "Flag": flag,
+        "Order ID": order_id,
+        "Latitude": lat,
+        "Longitude": lon,
+        "Location Link": map_url
+    }
+
+    row = [data_dict.get(col, "") for col in headers]
+    rows_to_add.append(row)
+    
         # ===== EMAIL =====
         if flag == "Excess Order":
 
@@ -412,6 +420,9 @@ Suggested: {entry['Suggested']}
 Remarks: {Remarks}
 """
             )
+
+# ✅ SINGLE API CALL (IMPORTANT)
+ws.append_rows(rows_to_add)
 
     st.success("Order Submitted")
     st.rerun()

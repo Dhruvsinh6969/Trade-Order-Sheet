@@ -407,8 +407,7 @@ for entry in cart.values():
         # ===== EMAIL =====
 if flag == "Excess Order":
   to_emails = city_email_map.get(city, ["dhruvsinh@gmail.com"])
-
-        send_email(
+send_email(
                 gmail_service,
                 to=", ".join(to_emails),
                 subject="Excess Order Alert",

@@ -459,7 +459,12 @@ if not mtd_orders.empty:
 
 ach_qty = mtd_orders["Qty"].sum() if not mtd_orders.empty else 0
 
-sku_mrp = dict(zip(sku_df["SKU"], sku_df["MRP"]))
+sku_mrp = dict(
+    zip(
+        sku_df["SKU"],
+        pd.to_numeric(sku_df["MRP"], errors="coerce").fillna(0)
+    )
+)
 
 if not mtd_orders.empty:
    mtd_orders["Value"] = mtd_orders["Qty"] * mtd_orders["SKU"].map(sku_mrp)

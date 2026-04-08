@@ -72,14 +72,20 @@ def get_gmail_service_cached():
 gmail_service = get_gmail_service_cached()
 
 # ========== HELPERS ==========
-st.cache_data(ttl=300)
+@st.cache_data(ttl=300)
 def load_data(tab):
-    ws = sheet.worksheet(tab)
-    data = ws.get_all_values()
-    if not data or len(data) < 2:
-        return pd.DataFrame()
-    return pd.DataFrame(data[1:], columns=data[0])
+    try:
+        ws = sheet.worksheet(tab)
+        data = ws.get_all_values()
 
+        if not data or len(data) < 2:
+            return pd.DataFrame()
+
+        return pd.DataFrame(data[1:], columns=data[0])
+
+    except Exception as e:
+        st.warning(f"{tab} load failed: {e}")
+        return pd.DataFrame()
 
 def append_row(tab, data_dict):
     ws = sheet.worksheet(tab)
@@ -425,11 +431,16 @@ Remarks: {Remarks}
 ws.append_rows(rows_to_add)
 
 st.success("Order Submitted")
+st.cache_data.clear()
 st.stop()
 
 # ========== TODAY + MTD ==========
 today = datetime.today().strftime("%Y-%m-%d")
 current_month = datetime.today().strftime("%Y-%m")
+
+if orders_df.empty:
+    st.warning("No order data available")
+    st.stop()
 
 today_orders = orders_df[
     (orders_df["Employee Name"] == employee) &

@@ -210,6 +210,7 @@ if not attendance_done_today:
             })
 
             st.success("Attendance marked")
+            st.cache_data.clear()
             st.rerun()
         else:
             st.error("Photo & location required")

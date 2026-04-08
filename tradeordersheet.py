@@ -474,9 +474,9 @@ tgt_qty = target_df[
     target_df["Employee"].astype(str).str.strip().str.lower() == employee.strip().lower()
 ]["Target Qty"].astype(float).sum() if "Target Qty" in target_df.columns else 0
 
-tgt_qty = target_df[
+tgt_val = target_df[
     target_df["Employee"].astype(str).str.strip().str.lower() == employee.strip().lower()
-]["Target Qty"].astype(float).sum() if "Target Qty" in target_df.columns else 0
+]["Target Value"].astype(float).sum() if "Target Value" in target_df.columns else 0
 
 col1,col2,col3,col4 = st.columns(4)
 col1.metric("MTD Qty", int(ach_qty))

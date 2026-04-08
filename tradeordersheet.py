@@ -153,11 +153,24 @@ if st.sidebar.button("Logout"):
 employee = st.session_state.employee
 role = st.session_state.role
 
-# ========== ATTENDANCE ==========
-if "attendance_done" not in st.session_state:
-    st.session_state.attendance_done = False
+def is_attendance_done_today(attendance_df, employee):
+    if attendance_df.empty:
+        return False
 
-if not st.session_state.attendance_done:
+    today_str = datetime.today().strftime("%Y%m%d")
+
+    df = attendance_df.copy()
+    df["Time"] = df["Time"].astype(str)
+
+    return any(
+        (df["Employee"].astype(str).str.strip().str.lower() == employee.strip().lower()) &
+        (df["Time"].str.startswith(today_str))
+    )
+    
+# ========== ATTENDANCE ==========
+attendance_done_today = is_attendance_done_today(attendance_df, employee)
+
+if not attendance_done_today:
     st.subheader("📸 Attendance")
     photo = st.camera_input("Capture Photo")
     loc = get_geolocation()
@@ -169,7 +182,7 @@ if not st.session_state.attendance_done:
 
             with open(file_name, "wb") as f:
                 f.write(photo.getbuffer())
-
+                
             drive_service = build("drive", "v3", credentials=creds)
             media = MediaFileUpload(file_name, mimetype='image/jpeg')
 
@@ -193,12 +206,15 @@ if not st.session_state.attendance_done:
                 "Photo": file_name
             })
 
-            st.session_state.attendance_done = True
             st.success("Attendance marked")
+            st.rerun()
         else:
             st.error("Photo & location required")
 
     st.stop()
+
+else:
+    st.success("✅ Attendance already marked")
 
 # ========== LOAD DATA ==========
 store_df = load_data("Store Master")
@@ -206,6 +222,7 @@ sku_df = load_data("SKU Master")
 sales_df = load_data("Sales Data")
 orders_df = load_data("Orders")
 target_df = load_data("Targets")
+attendance_df = load_data("Attendance")
 
 # ========== VISIT DAY FIX ==========
 today_day_full = datetime.today().strftime("%A")

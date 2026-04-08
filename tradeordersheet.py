@@ -372,15 +372,13 @@ if st.button("Submit Order", use_container_width=True):
     map_url = f"https://www.google.com/maps?q={lat},{lon}" if lat and lon else ""
 
     # ===== LOOP =====
-ws = sheet.worksheet("Orders")
-headers = ws.row_values(1)
-rows_to_add = []
+    ws = sheet.worksheet("Orders")
+    headers = ws.row_values(1)
+    rows_to_add = []
 
-for entry in cart.values():
-
-    flag = "Excess Order" if entry["Qty"] > 1.25 * max(entry["Suggested"], 1) else "OK"
-
-    data_dict = {
+    for entry in cart.values():
+     flag = "Excess Order" if entry["Qty"] > 1.25 * max(entry["Suggested"], 1) else "OK"
+     data_dict = {
         "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "Order Date": today,
         "Employee Name": employee,
@@ -404,30 +402,29 @@ for entry in cart.values():
     row = [data_dict.get(col, "") for col in headers]
     rows_to_add.append(row)
      # ✅ MUST BE INSIDE LOOP
-if flag == "Excess Order":
-  to_emails = city_email_map.get(city, ["dhruvsinh@gmail.com"])
-send_email(
+    if flag == "Excess Order":
+     to_emails = city_email_map.get(city, ["dhruvsinh@gmail.com"])
+     send_email(
                 gmail_service,
                 to=", ".join(to_emails),
                 subject="Excess Order Alert",
                 body=f"""
-Order ID: {order_id}
-Employee: {employee}
-City: {city}
-Store: {store_name}
-SKU: {entry['SKU']}
-Qty: {entry['Qty']}
-Suggested: {entry['Suggested']}
-Remarks: {Remarks}
-"""
+        Order ID: {order_id}
+        Employee: {employee}
+        City: {city}
+        Store: {store_name}
+        SKU: {entry['SKU']}
+        Qty: {entry['Qty']}
+        Suggested: {entry['Suggested']}
+        Remarks: {Remarks}
+        """
             )
+        # ✅ SINGLE API CALL (IMPORTANT)
+    ws.append_rows(rows_to_add)
 
-# ✅ SINGLE API CALL (IMPORTANT)
-ws.append_rows(rows_to_add)
-
-st.success("Order Submitted")
-st.cache_data.clear()
-st.stop()
+    st.success("Order Submitted")
+    st.cache_data.clear()
+    st.stop()
 
 # ========== TODAY + MTD ==========
 today = datetime.today().strftime("%Y-%m-%d")

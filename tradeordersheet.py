@@ -362,7 +362,6 @@ if st.button("Submit Order", use_container_width=True):
     else:
         next_order_id = 1
 
-    # ✅ ALWAYS AFTER next_order_id
     suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=2))
     order_id = f"ORD-{str(next_order_id).zfill(3)}-{suffix}"
 
@@ -375,12 +374,11 @@ if st.button("Submit Order", use_container_width=True):
     # ===== LOOP =====
 ws = sheet.worksheet("Orders")
 headers = ws.row_values(1)
-
 rows_to_add = []
 
 for entry in cart.values():
 
-    flag = "Excess Order" if entry["Qty"] > 1.2 * max(entry["Suggested"], 1) else "OK"
+    flag = "Excess Order" if entry["Qty"] > 1.25 * max(entry["Suggested"], 1) else "OK"
 
     data_dict = {
         "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -407,9 +405,8 @@ for entry in cart.values():
     rows_to_add.append(row)
     
         # ===== EMAIL =====
-    if flag == "Excess Order":
-
-            to_emails = city_email_map.get(city, ["dhruvsinh@gmail.com"])
+if flag == "Excess Order":
+  to_emails = city_email_map.get(city, ["dhruvsinh@gmail.com"])
 
             send_email(
                 gmail_service,
@@ -462,14 +459,13 @@ st.dataframe(today_orders[cols])
 
 # ===== MTD METRICS =====
 st.subheader("📈 MTD Performance")
+if not mtd_orders.empty:
+    mtd_orders["Qty"] = pd.to_numeric(mtd_orders["Qty"], errors="coerce").fillna(0)
 
-ach_qty = mtd_orders["Qty"].astype(float).sum() if not mtd_orders.empty else 0
-
-sku_mrp = dict(zip(sku_df["SKU"], pd.to_numeric(sku_df.get("MRP",0), errors='coerce').fillna(0)))
+ach_qty = mtd_orders["Qty"].sum() if not mtd_orders.empty else 0
 
 if not mtd_orders.empty:
-    mtd_orders["Value"] = mtd_orders["Qty"].astype(float) * mtd_orders["SKU"].map(sku_mrp)
-
+   mtd_orders["Value"] = mtd_orders["Qty"] * mtd_orders["SKU"].map(sku_mrp)
 ach_val = mtd_orders["Value"].sum() if not mtd_orders.empty else 0
 
 tgt_qty = target_df[target_df["Employee"]==employee]["Target Qty"].astype(float).sum() if "Target Qty" in target_df.columns else 0

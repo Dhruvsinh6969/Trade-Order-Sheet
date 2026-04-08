@@ -153,6 +153,9 @@ if st.sidebar.button("Logout"):
 employee = st.session_state.employee
 role = st.session_state.role
 
+# ========== LOAD DATA ==========
+attendance_df = load_data("Attendance")
+
 def is_attendance_done_today(attendance_df, employee):
     if attendance_df.empty:
         return False
@@ -222,7 +225,6 @@ sku_df = load_data("SKU Master")
 sales_df = load_data("Sales Data")
 orders_df = load_data("Orders")
 target_df = load_data("Targets")
-attendance_df = load_data("Attendance")
 
 # ========== VISIT DAY FIX ==========
 today_day_full = datetime.today().strftime("%A")

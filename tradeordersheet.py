@@ -214,7 +214,7 @@ if not attendance_done_today:
         else:
             st.error("Photo & location required")
 
-    st.stop()
+
 
 else:
     st.success("✅ Attendance already marked")

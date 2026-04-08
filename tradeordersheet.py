@@ -403,8 +403,7 @@ for entry in cart.values():
 
     row = [data_dict.get(col, "") for col in headers]
     rows_to_add.append(row)
-    
-        # ===== EMAIL =====
+     # ✅ MUST BE INSIDE LOOP
 if flag == "Excess Order":
   to_emails = city_email_map.get(city, ["dhruvsinh@gmail.com"])
 send_email(
